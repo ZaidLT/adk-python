@@ -1,0 +1,79 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: ADK 7719 Python 3.11 verification
+
+on:
+  push:
+    branches: ['ci/7719-python311']
+    paths: ['.github/workflows/ci-7719-python311.yml']
+
+permissions:
+  contents: read
+
+env:
+  # Packages with no installable wheel for the runner; leaving one in fails
+  # the whole sync. Nothing these jobs import reaches them, and lancedb only
+  # arrives transitively through crewai[tools], whose 0.38.0 release shipped
+  # no Linux x86_64 wheel. Add another as a further --no-install-package.
+  SKIP_PACKAGE_FLAGS: --no-install-package lancedb
+
+jobs:
+  unit-test:
+    name: Unit Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: 81681a23ddfe3f2ee684e5740d2844bb47f2d7ba
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv sync --extra test $SKIP_PACKAGE_FLAGS
+
+      - name: List installed packages
+        run: uv pip list
+
+      - name: Run unit tests with pytest
+        run: |
+          set -o pipefail
+          uv run pytest tests/unittests -n auto | tee "$RUNNER_TEMP/pytest.log"
+
+      - name: Annotate failing tests
+        # Copy pytest's FAILED/ERROR summary lines verbatim into annotations.
+        if: failure()
+        run: |
+          [ -f "$RUNNER_TEMP/pytest.log" ] || exit 0
+          sed -n '/^=* short test summary info =*$/,$p' "$RUNNER_TEMP/pytest.log" \
+            | grep -E '^(FAILED|ERROR) ' | head -n 10 \
+            | sed -e 's/%/%25/g' -e 's/^/::error::/'
